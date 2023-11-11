@@ -13,3 +13,6 @@ h.body.append(
     h.check(react2)
 );
 ```
+
+
+TODO: Make a virtual dom version.

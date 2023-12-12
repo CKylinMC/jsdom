@@ -66,10 +66,10 @@
                             manifest.text = arg;
                         } else if (arg instanceof Reactive) {
                             manifest.text = arg;
-                        } else if (typeof (arg) === 'object') {
-                            manifest.props = arg;
                         } else if (Array.isArray(arg)) {
                             manifest.children = arg;
+                        } else if (typeof (arg) === 'object') {
+                            manifest.props = arg;
                         }
                     }
 

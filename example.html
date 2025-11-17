@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSDOM Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            transition: opacity 0.2s ease;
+        }
+        .modal {
+            background: #fff;
+            border-radius: 6px;
+            width: 90%;
+            max-width: 520px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid #eee;
+            background: #fafafa;
+        }
+        .modal-body {
+            padding: 16px;
+        }
+        .modal-footer {
+            padding: 10px 16px;
+            border-top: 1px solid #eee;
+            text-align: right;
+            background: #fafafa;
+        }
+        .modal-close-btn {
+            background: transparent;
+            border: none;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 5px 10px;
+            margin: 5px;
+        }
+        input {
+            padding: 5px;
+            margin: 5px;
+        }
+    </style>
+</head>
+<body>
+</body>
+    <script src="jsdom.js"></script>
+    <script>
+        // Test reactive values
+        const count = _(0);
+        const name = _("World");
+        const showSection = _(true);
+        const items = _(["Apple", "Banana", "Orange"]);
+        const modalOpen = _(false);
+        
+        // Test computed values
+        const doubleCount = computed(() => count.value * 2);
+        const greeting = computed(() => `Hello, ${name.value}!`);
+        
+        // Define a reusable component
+        component("Counter", ({ label = "Counter", value }) => {
+            return h.div({ class: "counter-component", style: { border: "1px solid #ccc", padding: "10px", margin: "5px" } },
+                h.h4(label),
+                h.p("Value: ", value),
+                h.button({ onclick: () => value.value++ }, "+"),
+                h.button({ onclick: () => value.value-- }, "-")
+            );
+        });
+
+        // Modal component
+        // Uses the .modal-overlay, .modal, .modal-header, .modal-body, .modal-footer styles defined in <style>
+        // This component uses the component slot API (slots.default) instead of a children prop
+        component("Modal", (props, slots) => {
+            const { open, title = "", onClose = () => {} } = props || {};
+            console.log("Modal props:", props);
+            console.log("Modal slots:", slots);
+            // Render only when `open` is truthy (reactive)
+            return when(open,
+                h.div({ class: "modal-overlay", onclick: (e) => {
+                    // clicking on overlay (outside modal) closes it
+                    if (e.target === e.currentTarget) {
+                        open.value = false;
+                        onClose && onClose();
+                    }
+                }},
+                    h.div({ class: "modal", onclick: (e) => e.stopPropagation() },
+                        h.div({ class: "modal-header" },
+                            h.h3(title),
+                            h.button({ class: "modal-close-btn", onclick: () => { open.value = false; onClose && onClose(); } }, "×")
+                        ),
+                        // Insert slot content into the modal body
+                        h.div({ class: "modal-body" }, slots.default?.()),
+                        h.div({ class: "modal-footer" },
+                            h.button({ onclick: () => { open.value = false; onClose && onClose(); } }, "Close")
+                        )
+                    )
+                )
+            );
+        });
+        
+        // Test basic DOM creation
+        h.body.replaceChilds(
+            // Test 1: Basic elements and reactive functions
+            h.div({ class: "test-section" },
+                h.h2("Test 1: Reactive Functions & Dependencies"),
+                h.p("Count: ", count),
+                h.p("Double Count (computed): ", doubleCount),
+                // Function with reactive dependencies
+                h.p(() => `Count is ${count.value > 5 ? 'high' : 'low'}`),
+                h.button({ onclick: () => count.value++ }, "Increment"),
+                h.button({ onclick: () => count.value = 0 }, "Reset")
+            ),
+            
+            // Test 2: Conditional rendering with friendly syntax
+            h.div({ class: "test-section" },
+                h.h2("Test 2: Conditional Rendering"),
+                h.button({ onclick: () => showSection.value = !showSection.value }, 
+                    () => showSection.value ? "Hide Section" : "Show Section"
+                ),
+                // Using when() helper
+                when(showSection, 
+                    h.div({ style: { background: "#e0f0e0", padding: "10px", marginTop: "10px" } },
+                        h.p("This section is visible!"),
+                        h.p("Count: ", count)
+                    ),
+                    h.p({ style: { color: "gray" } }, "Section is hidden")
+                ),
+                // Using .if() method
+                h.div()
+                    .if(computed(() => count.value > 3),
+                        h.p({ style: { color: "green" } }, "Count is greater than 3!"),
+                        h.p({ style: { color: "red" } }, "Count is 3 or less")
+                    )
+            ),
+            
+            // Test 3: For loops with friendly syntax
+            h.div({ class: "test-section" },
+                h.h2("Test 3: List Rendering"),
+                h.input({ 
+                    type: "text", 
+                    placeholder: "Add item",
+                    onkeydown: (e) => {
+                        if (e.key === 'Enter' && e.target.value) {
+                            items.value = [...items.value, e.target.value];
+                            e.target.value = '';
+                        }
+                    }
+                }),
+                h.button({ onclick: () => items.value = [...items.value, `Item ${items.value.length + 1}`] }, "Add Item"),
+                h.button({ onclick: () => items.value = items.value.slice(0, -1) }, "Remove Last"),
+                // Using each() helper
+                h.ul(
+                    each(items, (item, index) => 
+                        h.li(`${index + 1}. ${item}`)
+                    )
+                ),
+                // Using .for() method
+                h.div({ style: { marginTop: "10px" } })
+                    .for(items, (item, index) => 
+                        h.span({ 
+                            style: { 
+                                display: "inline-block", 
+                                margin: "2px", 
+                                padding: "5px", 
+                                background: "#f0f0f0",
+                                borderRadius: "3px"
+                            } 
+                        }, item)
+                    )
+            ),
+            
+            // Test 4: Lifecycle hooks
+            h.div({ class: "test-section" },
+                h.h2("Test 4: Lifecycle Hooks"),
+                h.div()
+                    .text("Check console for lifecycle messages")
+                    .onMount(() => {
+                        console.log("Component mounted!");
+                        return () => console.log("Cleanup function called");
+                    })
+                    .beforeUnmount(() => {
+                        console.log("Component will unmount!");
+                    })
+                    .css({ padding: "10px", background: "#f5f5f5" })
+            ),
+            
+            // Test 5: Seamless html`` integration
+            h.div({ class: "test-section" },
+                h.h2("Test 5: HTML Template Literals"),
+                // html`` returns DOMTree, works seamlessly
+                html`
+                    <div style="background: #e8e8ff; padding: 15px; border-radius: 5px;">
+                        <h3>Using html\`\` template</h3>
+                        <p>Name: ${name}</p>
+                        <p>Greeting: ${greeting}</p>
+                        <p>Count: ${count} (Double: ${doubleCount})</p>
+                        ${when(computed(() => count.value > 0),
+                            html`<p style="color: green;">Count is positive!</p>`,
+                            html`<p style="color: red;">Count is zero or negative!</p>`
+                        )}
+                    </div>
+                `,
+                // Can mix html`` with h methods
+                h.div({ style: { marginTop: "10px" } },
+                    html`<strong>Mixed content:</strong> `,
+                    h.span({ style: { color: "blue" } }, name),
+                    html` has ${count} items`
+                )
+            ),
+            
+            // Test 6: Component reuse
+            h.div({ class: "test-section" },
+                h.h2("Test 6: Component System"),
+                h.p("Reusable counter components:"),
+                h.Counter({ label: "Primary Counter", value: count }),
+                h.Counter({ label: "Secondary Counter", value: _(10) }),
+                // Components work with html`` too
+                html`
+                    <div style="margin-top: 10px;">
+                        ${h.Counter({ label: "Template Counter", value: _(5) })}
+                    </div>
+                `
+            ),
+            
+            // Test 7: Two-way binding with clear syntax
+            h.div({ class: "test-section" },
+                h.h2("Test 7: Clear Argument Syntax"),
+                // inputfield with clear arguments: type, value, onchange, name
+                h.inputfield("text", name, null, "username"),
+                h.p(greeting),
+                // Checkbox with clear syntax
+                h.check(showSection, (e) => console.log("Checkbox changed:", e.target.checked)),
+                h.label(" Show/Hide sections")
+            ),
+            
+            // Test 8: Complex reactive example
+            h.div({ class: "test-section" },
+                h.h2("Test 8: Complex Reactive Dependencies"),
+                (() => {
+                    const todos = _([
+                        { id: 1, text: "Learn JSDOM", done: false },
+                        { id: 2, text: "Build something", done: false }
+                    ]);
+                    const filter = _("all"); // all, active, completed
+                    
+                    const filteredTodos = computed(() => {
+                        const f = filter.value;
+                        const t = todos.value;
+                        if (f === "active") return t.filter(todo => !todo.done);
+                        if (f === "completed") return t.filter(todo => todo.done);
+                        return t;
+                    });
+                    
+                    const stats = computed(() => {
+                        const t = todos.value;
+                        return {
+                            total: t.length,
+                            completed: t.filter(todo => todo.done).length,
+                            active: t.filter(todo => !todo.done).length
+                        };
+                    });
+                    
+                    return h.div(
+                        h.h4("Todo App Example"),
+                        h.div(
+                            h.button({ 
+                                onclick: () => filter.value = "all",
+                                style: () => ({ fontWeight: filter.value === "all" ? "bold" : "normal" })
+                            }, "All"),
+                            h.button({ 
+                                onclick: () => filter.value = "active",
+                                style: () => ({ fontWeight: filter.value === "active" ? "bold" : "normal" })
+                            }, "Active"),
+                            h.button({ 
+                                onclick: () => filter.value = "completed",
+                                style: () => ({ fontWeight: filter.value === "completed" ? "bold" : "normal" })
+                            }, "Completed")
+                        ),
+                        h.ul(
+                            each(filteredTodos, (todo) => 
+                                h.li({ style: { textDecoration: todo.done ? "line-through" : "none" } },
+                                    h.input({ 
+                                        type: "checkbox", 
+                                        checked: todo.done,
+                                        onchange: (e) => {
+                                            todos.value = todos.value.map(t => 
+                                                t.id === todo.id ? { ...t, done: e.target.checked } : t
+                                            );
+                                        }
+                                    }),
+                                    " ",
+                                    todo.text
+                                )
+                            )
+                        ),
+                        h.p(() => `Total: ${stats.value.total}, Active: ${stats.value.active}, Completed: ${stats.value.completed}`)
+                    );
+                })()
+            ),
+
+            // Test 9: Modal Component
+            h.div({ class: "test-section" },
+                h.h2("Test 9: Modal Component"),
+                h.p("Click the button to open the modal (state is reactive)."),
+                h.button({ onclick: () => modalOpen.value = true }, "Open Modal"),
+                // Modal usage: open controlled by reactive `modalOpen` variable
+                h.Modal({ open: modalOpen, title: "Demo Modal", onClose: () => console.log('Modal closed') },
+                    () => h.div(
+                        h.p("This is content inside the modal."),
+                        h.button({ onclick: () => modalOpen.value = false }, "Close from inside")
+                    )
+                )
+            ),
+
+            
+        );
+        
+        console.log("JSDOM test page loaded - All features demonstrated");
+    </script>
+</html>

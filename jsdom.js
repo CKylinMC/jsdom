@@ -589,18 +589,56 @@ var jsdom = (function (window = window, document = document) {
         }
 
         props(props = {}) {
+            if (!props || typeof props !== 'object') return this;
+            const pendingScoped = [];
+
+            // First pass: initialize state if provided
+            if (Object.prototype.hasOwnProperty.call(props, 'state')) {
+                const s = props.state;
+                if (s && typeof s === 'object' && !Array.isArray(s)) {
+                    Object.entries(s).forEach(([k, v]) => {
+                        try {
+                            this.state[k] = (typeof v === 'function') ? v() : v;
+                        } catch (_) {
+                            this.state[k] = v;
+                        }
+                    });
+                }
+            }
+
+            // Second pass: handle other props, queue scopedcss to apply after base props
             Object.entries(props).forEach(([key, value]) => {
-                if (key === 'style' && typeof value === 'object') {
+                if (key === 'state') {
+                    // already handled
+                    return;
+                }
+                if (key === 'style' && value && typeof value === 'object') {
                     this.css(value);
-                } else if (key === 'class') {
+                    return;
+                }
+                if (key === 'class') {
                     this.setClass(value);
-                } else if (key.startsWith('on')) {
+                    return;
+                }
+                if (key === 'scopedcss') {
+                    pendingScoped.push(value);
+                    return;
+                }
+                if (typeof key === 'string' && key.startsWith('on')) {
                     const event = key.slice(2).toLowerCase();
                     this.on(event, value);
-                } else {
-                    this.set(key, value);
+                    return;
                 }
+                this.set(key, value);
             });
+
+            // Apply scopedcss definitions at the end to ensure state is ready
+            if (pendingScoped.length) {
+                pendingScoped.forEach(def => {
+                    try { this.scopedcss(def); } catch (_) {}
+                });
+            }
+
             return this;
         }
 

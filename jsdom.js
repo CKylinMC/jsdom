@@ -9,6 +9,155 @@ var jsdom = (function (window = window, document = document) {
     let currentDependencies = null;
     let currentRenderContext = null; // DOMTree instance for template/condition functions
     const __elToDomTreeSet = new WeakMap();
+    let __scopeIdCounter = 0;
+
+    function __genScopeClass() {
+        __scopeIdCounter += 1;
+        return `jsd-${__scopeIdCounter.toString(36)}`;
+    }
+
+    function __toKebabCase(prop) {
+        return prop
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .replace(/^ms-/, '-ms-')
+            .toLowerCase();
+    }
+
+    function __cssObjectToString(obj, indent = '') {
+        const lines = [];
+        Object.entries(obj || {}).forEach(([selector, value]) => {
+            if (selector.startsWith('@')) {
+                if (typeof value === 'string') {
+                    lines.push(`${indent}${selector}{${value}}`);
+                } else if (typeof value === 'object') {
+                    lines.push(`${indent}${selector}{`);
+                    lines.push(__cssObjectToString(value, indent + '  '));
+                    lines.push(`${indent}}`);
+                }
+            } else if (typeof value === 'object') {
+                const decls = Object.entries(value)
+                    .filter(([, v]) => v !== null && typeof v !== 'undefined' && v !== false)
+                    .map(([k, v]) => `${indent}  ${__toKebabCase(k)}: ${String(v)};`)
+                    .join('\n');
+                lines.push(`${indent}${selector}{`);
+                if (decls) lines.push(decls);
+                lines.push(`${indent}}`);
+            } else if (typeof value === 'string') {
+                lines.push(`${indent}${selector}{${value}}`);
+            }
+        });
+        return lines.join('\n');
+    }
+
+    function __stripComments(css) {
+        return String(css).replace(/\/\*[\s\S]*?\*\//g, '');
+    }
+
+    function __findMatchingBrace(str, start) {
+        let depth = 0;
+        for (let i = start; i < str.length; i++) {
+            const ch = str[i];
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    function __prefixSelectorsBlock(selectorsText, prefix) {
+        // split by commas not inside brackets/quotes
+        const sels = [];
+        let buf = '';
+        let depthParen = 0, depthBracket = 0;
+        let inStr = false, strCh = '';
+        const push = () => { const s = buf.trim(); if (s) sels.push(s); buf = ''; };
+        for (let i = 0; i < selectorsText.length; i++) {
+            const c = selectorsText[i];
+            if (inStr) {
+                buf += c;
+                if (c === strCh && selectorsText[i - 1] !== '\\') { inStr = false; }
+                continue;
+            }
+            if (c === '"' || c === '\'') { inStr = true; strCh = c; buf += c; continue; }
+            if (c === '(') { depthParen++; buf += c; continue; }
+            if (c === ')') { depthParen--; buf += c; continue; }
+            if (c === '[') { depthBracket++; buf += c; continue; }
+            if (c === ']') { depthBracket--; buf += c; continue; }
+            if (c === ',' && depthParen === 0 && depthBracket === 0) { push(); continue; }
+            buf += c;
+        }
+        push();
+        const prefixed = sels.map(s => {
+            const t = s.trim();
+            if (!t) return '';
+            // do not prefix :root globally; simply scope it to prefix itself
+            if (t === ':root') return `.${prefix}`;
+            // If selector already includes the prefix, keep it
+            if (t.includes(`.${prefix}`)) return t;
+            // handle html/body special-case: keep structure
+            return `.${prefix} ${t}`;
+        }).filter(Boolean);
+        return prefixed.join(',');
+    }
+
+    function __scopeCSSText(cssText, prefixClass) {
+        const css = __stripComments(cssText);
+        let i = 0;
+        const len = css.length;
+        let out = '';
+        while (i < len) {
+            // skip whitespace
+            while (i < len && /\s/.test(css[i])) { out += css[i]; i++; }
+            if (i >= len) break;
+
+            if (css[i] === '@') {
+                const start = i;
+                // read at-rule name
+                let nameEnd = i;
+                while (nameEnd < len && /[^\s\{;]/.test(css[nameEnd])) nameEnd++;
+                const atRuleName = css.slice(i, nameEnd).toLowerCase();
+                // read through to next '{' or ';'
+                let j = nameEnd;
+                while (j < len && css[j] !== '{' && css[j] !== ';') j++;
+                if (j >= len) { out += css.slice(i); break; }
+                if (css[j] === ';') {
+                    // e.g. @import ...;
+                    out += css.slice(i, j + 1);
+                    i = j + 1;
+                    continue;
+                }
+                // it's a block at-rule: @media/@supports/@keyframes/...
+                const blockStart = j;
+                const blockEnd = __findMatchingBrace(css, blockStart);
+                if (blockEnd === -1) { out += css.slice(i); break; }
+                const header = css.slice(start, blockStart + 1); // includes '{'
+                const inner = css.slice(blockStart + 1, blockEnd);
+                if (/^@keyframes|^@font-face|^@page|^@counter-style/.test(atRuleName)) {
+                    // keep inner as-is for animation/font/page
+                    out += header + inner + '}';
+                } else {
+                    out += header + __scopeCSSText(inner, prefixClass) + '}';
+                }
+                i = blockEnd + 1;
+            } else {
+                // normal ruleset
+                let selEnd = i;
+                while (selEnd < len && css[selEnd] !== '{') selEnd++;
+                if (selEnd >= len) { out += css.slice(i); break; }
+                const selectorsText = css.slice(i, selEnd).trim();
+                const blockStart = selEnd;
+                const blockEnd = __findMatchingBrace(css, blockStart);
+                if (blockEnd === -1) { out += css.slice(i); break; }
+                const prefixedSelectors = __prefixSelectorsBlock(selectorsText, prefixClass);
+                const decls = css.slice(blockStart + 1, blockEnd);
+                out += `${prefixedSelectors}{${decls}}`;
+                i = blockEnd + 1;
+            }
+        }
+        return out;
+    }
 
     function __registerInstance(el, inst) {
         let set = __elToDomTreeSet.get(el);
@@ -150,6 +299,7 @@ var jsdom = (function (window = window, document = document) {
 
     class DOMTree {
         #dom;
+        #scopeClass = null;
         #stateReactives = new Map();
         #stateProxy = null;
         #reactive = {};
@@ -160,6 +310,7 @@ var jsdom = (function (window = window, document = document) {
         #observer = null;
         #eventListeners = [];
         #mounted = false;
+        #scopedStyleEl = null;
 
         constructor(tagname, ...args) {
             if (typeof tagname === 'string') {
@@ -178,8 +329,20 @@ var jsdom = (function (window = window, document = document) {
                 throw new Error('Invalid arguments for DOMTree constructor');
             }
 
+            this.#ensureScopeClass();
             this.#setupLifecycleObserver();
             __registerInstance(this.#dom, this);
+        }
+
+        #ensureScopeClass() {
+            // Reuse existing scope if present
+            const existing = this.#dom.dataset ? this.#dom.dataset.jsdomScope : null;
+            const scope = existing || __genScopeClass();
+            this.#scopeClass = scope;
+            try { this.#dom.classList.add(scope); } catch (_) {
+                this.#dom.setAttribute('class', `${(this.#dom.getAttribute('class') || '').trim()} ${scope}`.trim());
+            }
+            try { this.#dom.dataset.jsdomScope = scope; } catch (_) {}
         }
 
         #setupLifecycleObserver() {
@@ -326,6 +489,29 @@ var jsdom = (function (window = window, document = document) {
             return this.append(...children);
         }
 
+        mount(...children) {
+            return this.replaceChilds(...children);
+        }
+
+        mountTo(parent) {
+            if (this.#mounted) {
+                // clean previous side effects before moving
+                this.unmount();
+            }
+            if (parent instanceof DOMTree) {
+                parent.dom.appendChild(this.#dom);
+            } else if (parent instanceof HTMLElement) {
+                parent.appendChild(this.#dom);
+            } else if (typeof parent === 'string') {
+                document.querySelector(parent)?.appendChild(this.#dom);
+            }
+            if (this.#reactive && typeof this.#reactive._startObserver === 'function') {
+                try { this.#reactive._startObserver(); } catch(_){}
+            }
+            this.#mounted = true;
+            return this;
+        }
+
         mountChilds(...children) {
             const fragment = document.createDocumentFragment();
             const tempContainer = document.createElement('div');
@@ -460,7 +646,10 @@ var jsdom = (function (window = window, document = document) {
         }
 
         setClass(...classes) {
-            this.#dom.className = classes.join(' ');
+            const set = new Set(classes.filter(Boolean).map(String));
+            // Always preserve scope class
+            if (this.#scopeClass) set.add(this.#scopeClass);
+            this.#dom.className = Array.from(set).join(' ');
             return this;
         }
 
@@ -470,12 +659,17 @@ var jsdom = (function (window = window, document = document) {
         }
 
         removeClass(...names) {
-            this.#dom.classList.remove(...names);
+            // Prevent removing scope class
+            const filtered = names.filter(n => n !== this.#scopeClass);
+            if (filtered.length) this.#dom.classList.remove(...filtered);
             return this;
         }
 
         toggleClass(...names) {
-            names.forEach(name => this.#dom.classList.toggle(name));
+            names.forEach(name => {
+                if (name === this.#scopeClass) return;
+                this.#dom.classList.toggle(name);
+            });
             return this;
         }
 
@@ -633,7 +827,14 @@ var jsdom = (function (window = window, document = document) {
         get style() { return this.#dom.style; }
         get classList() { return this.#dom.classList; }
         get className() { return this.#dom.className; }
-        set className(value) { this.#dom.className = value; }
+        set className(value) {
+            const v = String(value || '');
+            if (this.#scopeClass && !new RegExp(`(^|\\s)${this.#scopeClass}(?=$|\\s)`).test(v)) {
+                this.#dom.className = (v + ' ' + this.#scopeClass).trim();
+            } else {
+                this.#dom.className = v;
+            }
+        }
         get id() { return this.#dom.id; }
         set id(value) { this.#dom.id = value; }
         get innerHTML() { return this.#dom.innerHTML; }
@@ -705,6 +906,67 @@ var jsdom = (function (window = window, document = document) {
                 this.#stateReactives.set(key, r);
             }
             return this.#stateReactives.get(key);
+        }
+
+        scopedcss(definition) {
+            this.#ensureScopeClass();
+            if (!this.#scopedStyleEl || this.#scopedStyleEl.parentNode !== this.#dom) {
+                this.#scopedStyleEl = document.createElement('style');
+                this.#scopedStyleEl.type = 'text/css';
+                this.#scopedStyleEl.setAttribute('data-jsdom-scoped', '');
+                try {
+                    this.#dom.insertBefore(this.#scopedStyleEl, this.#dom.firstChild);
+                } catch (_) {
+                    this.#dom.appendChild(this.#scopedStyleEl);
+                }
+            }
+
+            // Cleanup previous scopedcss effect
+            if (this.#reactive._scopedcss && typeof this.#reactive._scopedcss.stop === 'function') {
+                try { this.#reactive._scopedcss.stop(); } catch (_) {}
+                this.#reactive._scopedcss = null;
+            }
+
+            const applyText = (text) => {
+                const scoped = __scopeCSSText(String(text || ''), this.#scopeClass);
+                this.#scopedStyleEl.textContent = scoped;
+            };
+
+            const applyObject = (obj) => {
+                const raw = __cssObjectToString(obj || {});
+                const scoped = __scopeCSSText(raw, this.#scopeClass);
+                this.#scopedStyleEl.textContent = scoped;
+            };
+
+            const handle = (val) => {
+                if (val && typeof val === 'object' && !Array.isArray(val)) {
+                    applyObject(val);
+                } else {
+                    applyText(val);
+                }
+            };
+
+            if (typeof definition === 'function') {
+                const run = () => {
+                    const prevCtx = currentRenderContext;
+                    currentRenderContext = this;
+                    let res;
+                    try { res = definition.call(this, this); }
+                    finally { currentRenderContext = prevCtx; }
+                    handle(res);
+                };
+                const stop = effect(run);
+                this.#reactive._scopedcss = { stop };
+                this.registerEffectCleanup(stop);
+            } else if (definition instanceof Reactive || definition instanceof Computed) {
+                const stop = effect(() => handle(definition.value));
+                this.#reactive._scopedcss = { stop };
+                this.registerEffectCleanup(stop);
+            } else {
+                handle(definition);
+            }
+
+            return this;
         }
     }
 

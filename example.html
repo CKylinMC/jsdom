@@ -474,6 +474,48 @@
                 })()
             ),
 
+            // Test 13: Props scopedcss/state
+            h.div({ class: "test-section" },
+                h.h2("Test 13: Props scopedcss/state"),
+                (() => {
+                    const demo1 = h.div({
+                        scopedcss: `
+                        .msg{
+                            color: #fff;
+                            background:#333;
+                            padding:6px 8px;
+                            border-radius:4px;
+                        }
+                        `
+                    },
+                        h.p({ class: 'msg' }, "Scoped via props.scopedcss (string)")
+                    );
+
+                    const demo2 = h.div({
+                        state: { fontColor: '#4a90e2' },
+                        scopedcss: function(){ return `
+                        .msg{
+                            color: ${this.state.fontColor};
+                        }
+                        `; }
+                    },
+                        h.p({ class: 'msg' }, "Color from state.fontColor"),
+                        h.div(
+                            h.button({ onclick: () => demo2.state.fontColor = '#e91e63' }, "Pink"),
+                            h.button({ onclick: () => demo2.state.fontColor = '#4a90e2' }, "Blue"),
+                            h.button({ onclick: () => demo2.state.fontColor = '#2ecc71' }, "Green")
+                        )
+                    );
+
+                    return h.div(
+                        h.h3("A. props.scopedcss (string)"),
+                        demo1,
+                        h.space('8px'),
+                        h.h3("B. props.state + scopedcss(function)"),
+                        demo2
+                    );
+                })()
+            ),
             
         );
         

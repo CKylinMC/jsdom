@@ -340,6 +340,56 @@
                 )
             ),
 
+            // Test 10: DOMTree Internal State (this.state / this.useState)
+            h.div({ class: "test-section" },
+                h.h2("Test 10: DOMTree Internal State"),
+                h.div({ style: { padding: "10px", background: "#f7fbff", border: "1px solid #cde3ff" } })
+                 .append(function(){
+                    const count = this.useState('count', 0);
+                    const list = this.useState('list', () => [1,2,3]);
+                    return h.div(
+                        h.p(() => `Count: ${count.value}`),
+                        h.button({ onclick: () => count.value++ }, "+1"),
+                        h.button({ onclick: () => this.state.count = 0 }, "Reset"),
+                        h.space("8px"),
+                        // if with context
+                        h.div().if(() => this.state.count >= 3,
+                            () => h.p({ style: { color: "green" } }, "Count >= 3"),
+                            () => h.p({ style: { color: "gray" } }, "Count < 3")
+                        ),
+                        h.space("8px"),
+                        // for with context
+                        h.ul().for(() => this.state.list, function(item, index, ctx){
+                            return h.li(`${index + 1}. ${item}`);
+                        }),
+                        h.space("8px"),
+                        // html template with function using context
+                        html`<p>From html template - count is: ${() => count.value}</p>`
+                    );
+                 })
+            ),
+
+            // Test 11: Component Internal State (ctx.useState)
+            h.div({ class: "test-section" },
+                h.h2("Test 11: Component Internal State"),
+                (function(){
+                    component("LocalCounter", function(props){
+                        const { label = "LocalCounter" } = props || {};
+                        const value = this.useState(0);
+                        return h.div({ class: "counter-component", style: { border: "1px solid #ccc", padding: "10px", margin: "5px" } },
+                            h.h4(label),
+                            h.p("Value: ", value),
+                            h.button({ onclick: () => value.value++ }, "+"),
+                            h.button({ onclick: () => value.value = 0 }, "Reset")
+                        );
+                    });
+                    return h.div(
+                        h.LocalCounter({ label: "Local A" }),
+                        h.LocalCounter({ label: "Local B" })
+                    );
+                })()
+            ),
+
             
         );
         

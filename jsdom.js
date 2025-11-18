@@ -7,6 +7,7 @@
 
 var jsdom = (function (window = window, document = document) {
     let currentDependencies = null;
+    let currentRenderContext = null; // DOMTree instance for template/condition functions
 
     class Reactive {
         #_value = undefined;
@@ -131,6 +132,8 @@ var jsdom = (function (window = window, document = document) {
 
     class DOMTree {
         #dom;
+        #stateReactives = new Map();
+        #stateProxy = null;
         #reactive = {};
         #lifecycle = {
             onMount: [],
@@ -163,10 +166,10 @@ var jsdom = (function (window = window, document = document) {
                 const isInDOM = document.body.contains(this.#dom);
                 if (isInDOM && !this.#mounted) {
                     this.#mounted = true;
-                    this.#lifecycle.onMount.forEach(cb => cb());
+                    this.#lifecycle.onMount.forEach(cb => cb.call(this, this));
                 } else if (!isInDOM && this.#mounted) {
                     this.#mounted = false;
-                    this.#lifecycle.beforeUnmount.forEach(cb => cb());
+                    this.#lifecycle.beforeUnmount.forEach(cb => cb.call(this, this));
                 }
             });
 
@@ -181,7 +184,7 @@ var jsdom = (function (window = window, document = document) {
 
             if (document.body.contains(this.#dom)) {
                 this.#mounted = true;
-                this.#lifecycle.onMount.forEach(cb => cb());
+                this.#lifecycle.onMount.forEach(cb => cb.call(this, this));
             }
 
             Object.defineProperty(this.#dom, '_parentNode', {
@@ -252,7 +255,15 @@ var jsdom = (function (window = window, document = document) {
             const cleanup = effect(() => {
                 currentNodes.forEach(node => node.remove());
                 currentNodes = [];
-                const result = fn();
+                const prevCtx = currentRenderContext;
+                currentRenderContext = this;
+                let result;
+                try {
+                    // Bind this and also pass context as first argument
+                    result = fn.call(this, this);
+                } finally {
+                    currentRenderContext = prevCtx;
+                }
                 const nodes = this.#resultToNodes(result);
 
                 nodes.forEach(node => {
@@ -383,7 +394,27 @@ var jsdom = (function (window = window, document = document) {
         }
 
         set(name, value) {
-            this.#dom.setAttribute(name, value);
+            if (name === 'checked') {
+                const boolVal = !!value;
+                this.#dom.checked = boolVal;
+                if (boolVal) {
+                    this.#dom.setAttribute('checked', '');
+                } else {
+                    this.#dom.removeAttribute('checked');
+                }
+                return this;
+            }
+
+            if (name === 'value') {
+                this.#dom.value = value ?? '';
+                return this;
+            }
+
+            if (value === false || value === null || typeof value === 'undefined') {
+                this.#dom.removeAttribute(name);
+            } else {
+                this.#dom.setAttribute(name, value);
+            }
             return this;
         }
 
@@ -478,8 +509,10 @@ var jsdom = (function (window = window, document = document) {
 
         if(condition, thenContent, elseContent = null) {
             this.append(() => {
-                const cond = condition instanceof Reactive ? condition.value : condition;
-                return cond ? thenContent : elseContent;
+                const ctx = this;
+                const cond = condition instanceof Reactive ? condition.value : (typeof condition === 'function' ? condition.call(ctx, ctx) : condition);
+                const resolve = (c) => typeof c === 'function' ? c.call(ctx, ctx) : c;
+                return cond ? resolve(thenContent) : resolve(elseContent);
             });
             return this;
         }
@@ -499,7 +532,7 @@ var jsdom = (function (window = window, document = document) {
             this.append(() => {
                 const itemsArray = items instanceof Reactive ? items.value : items;
                 if (!Array.isArray(itemsArray)) return null;
-                return itemsArray.map((item, index) => renderFn(item, index));
+                return itemsArray.map((item, index) => renderFn.call(this, item, index, this));
             });
             return this;
         }
@@ -519,6 +552,69 @@ var jsdom = (function (window = window, document = document) {
         get textContent() { return this.#dom.textContent; }
         set textContent(value) { this.#dom.textContent = value; }
         get children() { return this.#dom.children; }
+
+        get state() {
+            if (!this.#stateProxy) {
+                const self = this;
+                this.#stateProxy = new Proxy({}, {
+                    get(_, prop) {
+                        const key = String(prop);
+                        if (!self.#stateReactives.has(key)) return undefined;
+                        return self.#stateReactives.get(key).value;
+                    },
+                    set(_, prop, value) {
+                        const key = String(prop);
+                        let r = self.#stateReactives.get(key);
+                        if (!r) {
+                            r = Reactive.of(value);
+                            // Keep underlying state in sync with reactive changes
+                            r.subscribe(v => {
+                                // no-op: proxy reads from reactive directly
+                            });
+                            self.#stateReactives.set(key, r);
+                        } else {
+                            r.value = value;
+                        }
+                        return true;
+                    },
+                    has(_, prop) {
+                        return self.#stateReactives.has(String(prop));
+                    },
+                    deleteProperty(_, prop) {
+                        const key = String(prop);
+                        return self.#stateReactives.delete(key);
+                    },
+                    ownKeys() {
+                        return Array.from(self.#stateReactives.keys());
+                    },
+                    getOwnPropertyDescriptor() {
+                        return { enumerable: true, configurable: true };
+                    }
+                });
+            }
+            return this.#stateProxy;
+        }
+
+        useState(nameOrInit, maybeInit) {
+            let key;
+            let initVal;
+            if (typeof nameOrInit === 'string') {
+                key = nameOrInit;
+                initVal = maybeInit;
+            } else {
+                key = `_s${this.#stateReactives.size}`;
+                initVal = nameOrInit;
+            }
+
+            if (!this.#stateReactives.has(key)) {
+                const initial = initVal instanceof Function ? initVal() : initVal;
+                const r = Reactive.of(initial);
+                // Keep proxy readable; writes go through reactive
+                r.subscribe(() => {});
+                this.#stateReactives.set(key, r);
+            }
+            return this.#stateReactives.get(key);
+        }
     }
 
 
@@ -554,7 +650,7 @@ var jsdom = (function (window = window, document = document) {
     };
 
     const html = function (strings, ...values) {
-        const createTemplate = () => {
+        const createTemplate = (boundCtx = null) => {
             let htmlString = '';
             const reactiveIndices = [];
             strings.forEach((str, i) => {
@@ -623,7 +719,14 @@ var jsdom = (function (window = window, document = document) {
                     currentNodes.forEach(node => node.remove());
                     currentNodes = [];
 
-                    const result = fn();
+                    const prevCtx = currentRenderContext;
+                    currentRenderContext = boundCtx || prevCtx;
+                    let result;
+                    try {
+                        result = fn.call(currentRenderContext || null, currentRenderContext || null);
+                    } finally {
+                        currentRenderContext = prevCtx;
+                    }
                     const nodes = resultToNodes(result);
 
                     nodes.forEach(node => {
@@ -658,7 +761,8 @@ var jsdom = (function (window = window, document = document) {
 
         if (hasReactive) {
             return () => {
-                const fragment = createTemplate();
+                const boundCtx = currentRenderContext;
+                const fragment = createTemplate(boundCtx);
                 if (fragment.children.length === 1) {
                     return new DOMTree(fragment.children[0]);
                 }
@@ -818,18 +922,21 @@ var jsdom = (function (window = window, document = document) {
     };
 
     const when = (condition, thenContent, elseContent = null) => {
-        return () => {
-            const cond = condition instanceof Reactive ? condition.value : condition;
-            return cond ? (typeof thenContent === 'function' ? thenContent() : thenContent)
-                : (typeof elseContent === 'function' ? elseContent() : elseContent);
+        return function () {
+            const ctx = currentRenderContext || this;
+            const cond = condition instanceof Reactive ? condition.value : (typeof condition === 'function' ? condition.call(ctx, ctx) : condition);
+            const resolve = (c) => typeof c === 'function' ? c.call(ctx, ctx) : c;
+            return cond ? resolve(thenContent) : resolve(elseContent);
         };
     };
 
     const each = (items, renderFn) => {
-        return () => {
-            const itemsArray = items instanceof Reactive ? items.value : items;
+        return function () {
+            const ctx = currentRenderContext || this;
+            const source = (items instanceof Reactive) ? items.value : (typeof items === 'function' ? items.call(ctx, ctx) : items);
+            const itemsArray = source;
             if (!Array.isArray(itemsArray)) return null;
-            return itemsArray.map((item, index) => renderFn(item, index));
+            return itemsArray.map((item, index) => renderFn.call(ctx, item, index, ctx));
         };
     };
 

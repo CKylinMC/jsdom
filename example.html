@@ -127,7 +127,7 @@
         });
         
         // Test basic DOM creation
-        h.body.replaceChilds(
+        h.body.mount(
             // Test 1: Basic elements and reactive functions
             h.div({ class: "test-section" },
                 h.h2("Test 1: Reactive Functions & Dependencies"),
@@ -387,6 +387,90 @@
                         h.LocalCounter({ label: "Local A" }),
                         h.LocalCounter({ label: "Local B" })
                     );
+                })()
+            ),
+            
+            // Test 12: Scoped CSS
+            h.div({ class: "test-section" },
+                h.h2("Test 12: Scoped CSS"),
+                (() => {
+                    const primary = _('#4a90e2');
+                    const rounded = _(true);
+                    const size = _('md'); // sm | md | lg
+
+                    const sizeSelect = h.select().value(size)
+                        .append(
+                            h.option({ value: 'sm' }, 'sm'),
+                            h.option({ value: 'md' }, 'md'),
+                            h.option({ value: 'lg' }, 'lg'),
+                        );
+
+                    const section = h.div(
+                        h.div({ class: 'toolbar' },
+                            h.label('Color: '),
+                            h.inputfield('color', primary),
+                            h.space('8px'),
+                            h.label(
+                                h.check(rounded),
+                                ' Rounded'
+                            ),
+                            h.space('8px'),
+                            h.label('Size: '),
+                            sizeSelect
+                        ),
+                        h.div({ class: 'card' },
+                            h.h3({ class: 'title' }, 'Scoped Card'),
+                            h.p('Only styles inside this block are affected.'),
+                            h.button({ class: 'btn', onclick: () => alert('Clicked!') }, 'Button')
+                        )
+                    );
+
+                    // Demonstrate object-style, reactive values, @media and @keyframes scoping
+                    section.scopedcss(() => ({
+                        '.toolbar': {
+                            marginBottom: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                        },
+                        '.card': {
+                            border: `2px solid ${primary.value}`,
+                            borderRadius: rounded.value ? '12px' : '4px',
+                            padding: size.value === 'lg' ? '20px' : (size.value === 'sm' ? '8px' : '12px'),
+                            background: '#fff',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                            transition: 'border-color .2s ease, transform .1s ease'
+                        },
+                        '.card:hover': {
+                            transform: 'translateY(-1px)'
+                        },
+                        '.title': {
+                            margin: '0 0 6px',
+                            color: primary.value
+                        },
+                        '.btn': {
+                            display: 'inline-block',
+                            padding: '6px 10px',
+                            background: primary.value,
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer'
+                        },
+                        '.btn:active': {
+                            animation: 'pulse .25s ease'
+                        },
+                        '@media (max-width: 480px)': {
+                            '.card': { padding: '10px' }
+                        },
+                        '@keyframes pulse': {
+                            from: { transform: 'scale(1)' },
+                            '50%': { transform: 'scale(1.03)' },
+                            to: { transform: 'scale(1)' }
+                        }
+                    }));
+
+                    return section;
                 })()
             ),
 

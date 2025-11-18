@@ -8,6 +8,24 @@
 var jsdom = (function (window = window, document = document) {
     let currentDependencies = null;
     let currentRenderContext = null; // DOMTree instance for template/condition functions
+    const __elToDomTreeSet = new WeakMap();
+
+    function __registerInstance(el, inst) {
+        let set = __elToDomTreeSet.get(el);
+        if (!set) {
+            set = new Set();
+            __elToDomTreeSet.set(el, set);
+        }
+        set.add(inst);
+    }
+
+    function __unregisterInstance(el, inst) {
+        const set = __elToDomTreeSet.get(el);
+        if (set) {
+            set.delete(inst);
+            if (set.size === 0) __elToDomTreeSet.delete(el);
+        }
+    }
 
     class Reactive {
         #_value = undefined;
@@ -139,6 +157,8 @@ var jsdom = (function (window = window, document = document) {
             onMount: [],
             beforeUnmount: []
         };
+        #observer = null;
+        #eventListeners = [];
         #mounted = false;
 
         constructor(tagname, ...args) {
@@ -159,10 +179,11 @@ var jsdom = (function (window = window, document = document) {
             }
 
             this.#setupLifecycleObserver();
+            __registerInstance(this.#dom, this);
         }
 
         #setupLifecycleObserver() {
-            const observer = new MutationObserver(() => {
+            this.#observer = new MutationObserver(() => {
                 const isInDOM = document.body.contains(this.#dom);
                 if (isInDOM && !this.#mounted) {
                     this.#mounted = true;
@@ -175,7 +196,7 @@ var jsdom = (function (window = window, document = document) {
 
             const startObserving = () => {
                 if (this.#dom.parentNode) {
-                    observer.observe(this.#dom.parentNode, {
+                    this.#observer.observe(this.#dom.parentNode, {
                         childList: true,
                         subtree: true
                     });
@@ -187,12 +208,9 @@ var jsdom = (function (window = window, document = document) {
                 this.#lifecycle.onMount.forEach(cb => cb.call(this, this));
             }
 
-            Object.defineProperty(this.#dom, '_parentNode', {
-                get: () => this.#dom.parentNode,
-                set: (parent) => {
-                    if (parent) startObserving();
-                }
-            });
+            // 直接开始观察（若当前已有父节点），并存下重启观察函数供迁移后调用
+            startObserving();
+            this.#reactive._startObserver = startObserving;
         }
 
         #processArgs(args) {
@@ -213,9 +231,11 @@ var jsdom = (function (window = window, document = document) {
 
         #createReactiveNode(reactive) {
             const textNode = document.createTextNode(reactive.value);
-            reactive.subscribe((value) => {
+            const unsub = reactive.subscribe((value) => {
                 textNode.textContent = value;
             });
+            this.#reactive.textSubs = this.#reactive.textSubs || [];
+            this.#reactive.textSubs.push(unsub);
             return textNode;
         }
 
@@ -294,6 +314,14 @@ var jsdom = (function (window = window, document = document) {
         }
 
         replaceChilds(...children) {
+            // Cascade unmount all child DOMTree instances first
+            this.#cascadeUnmountChildren();
+            if (this.#reactive) {
+                if (typeof this.#reactive.value === 'function') { try { this.#reactive.value(); } catch(_){} }
+                if (Array.isArray(this.#reactive.functions)) { this.#reactive.functions.forEach(fn => { try { fn(); } catch(_){} }); this.#reactive.functions = []; }
+                if (Array.isArray(this.#reactive.textSubs)) { this.#reactive.textSubs.forEach(unsub => { try { unsub(); } catch(_){} }); this.#reactive.textSubs = []; }
+                if (Array.isArray(this.#reactive.effects)) { this.#reactive.effects.forEach(stop => { try { stop(); } catch(_){} }); this.#reactive.effects = []; }
+            }
             this.#dom.innerHTML = '';
             return this.append(...children);
         }
@@ -357,12 +385,19 @@ var jsdom = (function (window = window, document = document) {
         }
 
         appendTo(parent) {
+            if (this.#mounted) {
+                // clean previous side effects before moving
+                this.unmount();
+            }
             if (parent instanceof DOMTree) {
                 parent.dom.appendChild(this.#dom);
             } else if (parent instanceof HTMLElement) {
                 parent.appendChild(this.#dom);
             } else if (typeof parent === 'string') {
                 document.querySelector(parent)?.appendChild(this.#dom);
+            }
+            if (this.#reactive && typeof this.#reactive._startObserver === 'function') {
+                try { this.#reactive._startObserver(); } catch(_){}
             }
             return this;
         }
@@ -385,11 +420,13 @@ var jsdom = (function (window = window, document = document) {
 
         on(event, handler) {
             this.#dom.addEventListener(event, handler);
+            this.#eventListeners.push({ event, handler });
             return this;
         }
 
         off(event, handler) {
             this.#dom.removeEventListener(event, handler);
+            this.#eventListeners = this.#eventListeners.filter(e => !(e.event === event && e.handler === handler));
             return this;
         }
 
@@ -504,6 +541,60 @@ var jsdom = (function (window = window, document = document) {
 
         beforeUnmount(callback) {
             this.#lifecycle.beforeUnmount.push(callback);
+            return this;
+        }
+
+        registerEffectCleanup(fn) {
+            this.#reactive.effects = this.#reactive.effects || [];
+            this.#reactive.effects.push(fn);
+            return this;
+        }
+
+        #cascadeUnmountChildren() {
+            const visited = new Set();
+            const els = this.#dom.querySelectorAll('*');
+            els.forEach(el => {
+                const set = __elToDomTreeSet.get(el);
+                if (set && set.size) {
+                    set.forEach(inst => {
+                        if (inst !== this && !visited.has(inst)) {
+                            visited.add(inst);
+                            try { inst.unmount(); } catch(_){}
+                        }
+                    });
+                }
+            });
+        }
+
+        unmount() {
+            if (this.#mounted) {
+                this.#mounted = false;
+                this.#lifecycle.beforeUnmount.forEach(cb => {
+                    try { cb.call(this, this); } catch (_) {}
+                });
+            }
+            // First cascade to children
+            this.#cascadeUnmountChildren();
+            // remove event listeners
+            if (this.#eventListeners && this.#eventListeners.length) {
+                this.#eventListeners.forEach(({ event, handler }) => {
+                    try { this.#dom.removeEventListener(event, handler); } catch (_) {}
+                });
+                this.#eventListeners = [];
+            }
+            // cleanup reactive pieces
+            if (this.#reactive) {
+                if (typeof this.#reactive.value === 'function') { try { this.#reactive.value(); } catch(_){} delete this.#reactive.value; }
+                if (Array.isArray(this.#reactive.functions)) { this.#reactive.functions.forEach(fn => { try { fn(); } catch(_){} }); this.#reactive.functions = []; }
+                if (Array.isArray(this.#reactive.textSubs)) { this.#reactive.textSubs.forEach(unsub => { try { unsub(); } catch(_){} }); this.#reactive.textSubs = []; }
+                if (Array.isArray(this.#reactive.effects)) { this.#reactive.effects.forEach(stop => { try { stop(); } catch(_){} }); this.#reactive.effects = []; }
+            }
+            // disconnect observer
+            if (this.#observer) {
+                try { this.#observer.disconnect(); } catch (_) {}
+            }
+            // unregister mapping to avoid retention
+            __unregisterInstance(this.#dom, this);
             return this;
         }
 
@@ -715,7 +806,7 @@ var jsdom = (function (window = window, document = document) {
                 span.parentNode.replaceChild(placeholder, span);
 
                 let currentNodes = [];
-                effect(() => {
+                const stop = effect(() => {
                     currentNodes.forEach(node => node.remove());
                     currentNodes = [];
 
@@ -734,6 +825,9 @@ var jsdom = (function (window = window, document = document) {
                         currentNodes.push(node);
                     });
                 });
+                if (boundCtx && boundCtx instanceof DOMTree && typeof boundCtx.registerEffectCleanup === 'function') {
+                    boundCtx.registerEffectCleanup(stop);
+                }
             });
 
             return fragment;
@@ -993,6 +1087,13 @@ var jsdom = (function (window = window, document = document) {
     window.each = each;
     window.q = (query, parent = document) => parent.querySelector(query);
     window.qall = (query, parent = document) => [...parent.querySelectorAll(query)];
+    window.unmount = (target) => {
+        try {
+            if (!target) return;
+            if (target instanceof DOMTree) return target.unmount();
+            if (target instanceof HTMLElement) return new DOMTree(target).unmount();
+        } catch (_) {}
+    };
 
     console.log("JSDOM Reimplemented v0.3 loaded.");
 

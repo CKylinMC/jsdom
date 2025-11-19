@@ -663,7 +663,23 @@ var jsdom = (function (window = window, document = document) {
                     return;
                 }
                 if (key === 'class') {
-                    this.setClass(value);
+                    // Support reactive class attribute
+                    if (typeof value === 'function') {
+                        const updateClass = () => {
+                            const result = value.call(this, this);
+                            this.setClass(result);
+                        };
+                        const stop = effect(updateClass);
+                        this.registerEffectCleanup(stop);
+                    } else if (value instanceof Reactive || value instanceof Computed) {
+                        const updateClass = () => {
+                            this.setClass(value.value);
+                        };
+                        const stop = effect(updateClass);
+                        this.registerEffectCleanup(stop);
+                    } else {
+                        this.setClass(value);
+                    }
                     return;
                 }
                 if (key === 'scopedcss') {

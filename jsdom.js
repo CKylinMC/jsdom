@@ -637,6 +637,7 @@ var jsdom = (function (window = window, document = document) {
         props(props = {}) {
             if (!props || typeof props !== 'object') return this;
             const pendingScoped = [];
+            const pendingSetup = [];
 
             // First pass: initialize state if provided
             if (Object.prototype.hasOwnProperty.call(props, 'state')) {
@@ -652,7 +653,7 @@ var jsdom = (function (window = window, document = document) {
                 }
             }
 
-            // Second pass: handle other props, queue scopedcss to apply after base props
+            // Second pass: handle other props, queue scopedcss and setup to apply after base props
             Object.entries(props).forEach(([key, value]) => {
                 if (key === 'state') {
                     // already handled
@@ -682,6 +683,69 @@ var jsdom = (function (window = window, document = document) {
                     }
                     return;
                 }
+                if (key === 'value') {
+                    // Support reactive value attribute
+                    if (typeof value === 'function') {
+                        const updateValue = () => {
+                            const result = value.call(this, this);
+                            this.value(result);
+                        };
+                        const stop = effect(updateValue);
+                        this.registerEffectCleanup(stop);
+                    } else if (value instanceof Reactive || value instanceof Computed) {
+                        const updateValue = () => {
+                            this.value(value.value);
+                        };
+                        const stop = effect(updateValue);
+                        this.registerEffectCleanup(stop);
+                    } else {
+                        this.value(value);
+                    }
+                    return;
+                }
+                if (key === 'attr' && value && typeof value === 'object') {
+                    // Support attr object with reactive values
+                    Object.entries(value).forEach(([attrName, attrValue]) => {
+                        if (typeof attrValue === 'function') {
+                            const updateAttr = () => {
+                                const result = attrValue.call(this, this);
+                                this.set(attrName, result);
+                            };
+                            const stop = effect(updateAttr);
+                            this.registerEffectCleanup(stop);
+                        } else if (attrValue instanceof Reactive || attrValue instanceof Computed) {
+                            const updateAttr = () => {
+                                this.set(attrName, attrValue.value);
+                            };
+                            const stop = effect(updateAttr);
+                            this.registerEffectCleanup(stop);
+                        } else {
+                            this.set(attrName, attrValue);
+                        }
+                    });
+                    return;
+                }
+                if (key === 'setup') {
+                    // Queue setup function to run after all props are set
+                    if (typeof value === 'function') {
+                        pendingSetup.push(value);
+                    }
+                    return;
+                }
+                if (key === 'onMount') {
+                    // Add to lifecycle hooks
+                    if (typeof value === 'function') {
+                        this.onMount(value);
+                    }
+                    return;
+                }
+                if (key === 'beforeUnmount') {
+                    // Add to lifecycle hooks
+                    if (typeof value === 'function') {
+                        this.beforeUnmount(value);
+                    }
+                    return;
+                }
                 if (key === 'scopedcss') {
                     pendingScoped.push(value);
                     return;
@@ -698,6 +762,13 @@ var jsdom = (function (window = window, document = document) {
             if (pendingScoped.length) {
                 pendingScoped.forEach(def => {
                     try { this.scopedcss(def); } catch (_) {}
+                });
+            }
+
+            // Run setup functions last, after all props and state are initialized
+            if (pendingSetup.length) {
+                pendingSetup.forEach(fn => {
+                    try { fn.call(this, this); } catch (e) { console.error('Setup error:', e); }
                 });
             }
 

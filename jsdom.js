@@ -26,7 +26,11 @@ var jsdom = (function (window = window, document = document) {
     function __cssObjectToString(obj, indent = '') {
         const lines = [];
         Object.entries(obj || {}).forEach(([selector, value]) => {
-            if (selector.startsWith('@')) {
+            // Check if it's @self - treat it as a regular selector, not an at-rule
+            const isSelfSelector = selector === '@self' || selector.startsWith('@self:') || selector.startsWith('@self::') || selector.startsWith('@self.');
+            
+            if (selector.startsWith('@') && !isSelfSelector) {
+                // Real at-rules like @media, @keyframes, etc.
                 if (typeof value === 'string') {
                     lines.push(`${indent}${selector}{${value}}`);
                 } else if (typeof value === 'object') {
@@ -35,6 +39,7 @@ var jsdom = (function (window = window, document = document) {
                     lines.push(`${indent}}`);
                 }
             } else if (typeof value === 'object') {
+                // Regular selector or @self with object value
                 const decls = Object.entries(value)
                     .filter(([, v]) => v !== null && typeof v !== 'undefined' && v !== false)
                     .map(([k, v]) => `${indent}  ${__toKebabCase(k)}: ${String(v)};`)
@@ -92,6 +97,26 @@ var jsdom = (function (window = window, document = document) {
         const prefixed = sels.map(s => {
             const t = s.trim();
             if (!t) return '';
+            
+            // Check if @self appears anywhere in the selector
+            if (t.includes('@self')) {
+                // Replace @self with the prefix class
+                // Handle different cases:
+                // - @self alone or with pseudo-classes/elements: @self, @self:hover, @self::before
+                // - @self with class/id/attr: @self.active, @self#id, @self[attr]
+                // - @self in compound selectors: body.dark @self, @self > div, .parent @self:hover
+                
+                let result = t;
+                
+                // Replace @self followed by pseudo-classes, pseudo-elements, classes, ids, or attributes
+                // Pattern: @self followed by (::, :, ., #, [, or whitespace/end)
+                result = result.replace(/@self(::?[a-zA-Z-]+|\.[a-zA-Z_-][a-zA-Z0-9_-]*|#[a-zA-Z_-][a-zA-Z0-9_-]*|\[[^\]]+\])?/g, 
+                    (match, suffix) => `.${prefix}${suffix || ''}`
+                );
+                
+                return result;
+            }
+            
             // do not prefix :root globally; simply scope it to prefix itself
             if (t === ':root') return `.${prefix}`;
             // If selector already includes the prefix, keep it
@@ -118,6 +143,27 @@ var jsdom = (function (window = window, document = document) {
                 let nameEnd = i;
                 while (nameEnd < len && /[^\s\{;]/.test(css[nameEnd])) nameEnd++;
                 const atRuleName = css.slice(i, nameEnd).toLowerCase();
+                
+                // Check if it's @self - treat as normal selector, not at-rule
+                const isSelfSelector = atRuleName === '@self' || atRuleName.startsWith('@self:') || 
+                                      atRuleName.startsWith('@self::') || atRuleName.startsWith('@self.');
+                
+                if (isSelfSelector) {
+                    // Treat @self as a normal selector
+                    let selEnd = nameEnd;
+                    while (selEnd < len && css[selEnd] !== '{') selEnd++;
+                    if (selEnd >= len) { out += css.slice(i); break; }
+                    const selectorsText = css.slice(i, selEnd).trim();
+                    const blockStart = selEnd;
+                    const blockEnd = __findMatchingBrace(css, blockStart);
+                    if (blockEnd === -1) { out += css.slice(i); break; }
+                    const prefixedSelectors = __prefixSelectorsBlock(selectorsText, prefixClass);
+                    const decls = css.slice(blockStart + 1, blockEnd);
+                    out += `${prefixedSelectors}{${decls}}`;
+                    i = blockEnd + 1;
+                    continue;
+                }
+                
                 // read through to next '{' or ';'
                 let j = nameEnd;
                 while (j < len && css[j] !== '{' && css[j] !== ';') j++;
@@ -1395,7 +1441,7 @@ var jsdom = (function (window = window, document = document) {
         } catch (_) {}
     };
 
-    console.log("JSDOM Reimplemented v0.3 loaded.");
+    console.log("JSDOM v0.3 loaded.");
 
     return {
         h, html, _, reactive,
